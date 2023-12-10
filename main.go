@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -35,7 +38,7 @@ func init() {
 	fromTime, _ = time.Parse(time.RFC3339[:10], "2023-12-10")
 }
 
-func newEthClient(rawurl string) (*ethclient.Client, error) {
+func newEthClient(ctx context.Context, rawurl string) (*ethclient.Client, error) {
 
 	hc := http.Client{}
 	if proxyURL := os.Getenv(arg.FlagProxy); len(proxyURL) > 0 {
@@ -52,7 +55,7 @@ func newEthClient(rawurl string) (*ethclient.Client, error) {
 		hc.Transport = transport
 	}
 
-	c, err := rpc.DialOptions(context.Background(), rawurl, rpc.WithHTTPClient(&hc))
+	c, err := rpc.DialOptions(ctx, rawurl, rpc.WithHTTPClient(&hc))
 	if err != nil {
 		return nil, err
 	}
@@ -62,36 +65,37 @@ func newEthClient(rawurl string) (*ethclient.Client, error) {
 }
 
 func main() {
+	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+
 	// Dial new client
-	client, err := newEthClient(os.Getenv(arg.FlagEthereumNetworkAddress))
+	client, err := newEthClient(ctx, os.Getenv(arg.FlagEthereumNetworkAddress))
 	if err != nil {
 		fmt.Println("Failed to connect to the Ethereum network:", err)
 		return
 	}
 	defer client.Close()
-	wssClient, err := ethclient.Dial(os.Getenv(arg.FlagEthereumNetworkAddressWss))
+	wssClient, err := ethclient.DialContext(ctx, os.Getenv(arg.FlagEthereumNetworkAddressWss))
 	if err != nil {
 		fmt.Println("Failed to connect to the Ethereum wss network:", err)
 		return
 	}
 	defer client.Close()
 
-	waitc := make(chan struct{})
-
 	// TODO: check if is finalized
-	currentBlockNumber, err := historyCapture(client)
+	currentBlockNumber, err := historyCapture(ctx, client)
 	if err != nil {
 		fmt.Println("Program running error:", err.Error())
 		os.Exit(0)
 	}
 	fmt.Println(currentBlockNumber)
 	go func() {
-		if err := startSubscribeHead(context.Background(), wssClient, currentBlockNumber); err != nil {
+		if err := holdSubscribeHead(ctx, wssClient, currentBlockNumber); err != nil {
 			os.Exit(0)
 		}
 	}()
 
-	<-waitc
+	<-ctx.Done()
+	fmt.Println("Shutdown success")
 }
 
 func includes(captureAddresses []common.Address, target *common.Address) bool {
@@ -124,9 +128,9 @@ func captureBlock(block *types.Block, captureAddresses []common.Address) {
 }
 
 // 返回历史数据抓取的区块高度
-func historyCapture(client *ethclient.Client) (currentBlockNumber uint64, err error) {
+func historyCapture(ctx context.Context, client *ethclient.Client) (currentBlockNumber uint64, err error) {
 	// Get the latest header
-	header, err := client.HeaderByNumber(context.Background(), nil)
+	header, err := client.HeaderByNumber(ctx, nil)
 	if err != nil {
 		fmt.Println("Failed to get the latest header:", err)
 		return 0, err
@@ -147,13 +151,20 @@ func historyCapture(client *ethclient.Client) (currentBlockNumber uint64, err er
 			preBlockNumber = latestBlockNumber - 1
 		)
 		for {
-			preBlock, err := client.BlockByNumber(context.Background(), big.NewInt(int64(preBlockNumber)))
+			if ctx.Err() != nil {
+				return
+			}
+			preBlock, err := client.BlockByNumber(ctx, big.NewInt(int64(preBlockNumber)))
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
 				fmt.Printf("Faile to get the block with number:%d, will retry in 1s\n", preBlockNumber)
 				time.Sleep(time.Second)
 				continue
 			}
 			if time.Unix(int64(preBlock.Time()), 0).Before(fromTime) {
+				// stop recapture the trasactions which are before fromTime
 				break
 			}
 			captureBlock(preBlock, captureAddresses)
@@ -165,16 +176,34 @@ func historyCapture(client *ethclient.Client) (currentBlockNumber uint64, err er
 	return currentBlockNumber, nil
 }
 
-func startSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlockNumber uint64) error {
+func holdSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlockNumber uint64) error {
+	retryCount := 0
+	currentBlockNumber := fromBlockNumber
+	for {
+		var err error
+		currentBlockNumber, err = startSubscribeHead(ctx, client, currentBlockNumber)
+		if err != nil {
+			if retryCount <= 3 {
+				retryCount++
+				time.Sleep(time.Second * time.Duration(10*retryCount))
+				fmt.Printf("Retry %d subscribe header\n", retryCount)
+				continue
+			}
+			return errors.New("Failed to subscribe new head more than 3 times")
+		}
+	}
+}
+
+func startSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlockNumber uint64) (uint64, error) {
 
 	currentBlockNumber := fromBlockNumber
 
 	// subscribe new head
 	headers := make(chan *types.Header)
-	sub, err := client.SubscribeNewHead(context.Background(), headers)
+	sub, err := client.SubscribeNewHead(ctx, headers)
 	if err != nil {
 		fmt.Printf("Failed to subscribe new header, %s\n", err.Error())
-		return err
+		return currentBlockNumber, err
 	}
 	defer sub.Unsubscribe()
 
@@ -185,7 +214,7 @@ func startSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlock
 		select {
 		case err := <-sub.Err():
 			fmt.Printf("Subscribe NewHead err: %s\n", err)
-			return err
+			return currentBlockNumber, err
 		case header := <-headers:
 			headerBlockNumber := header.Number.Uint64()
 			// no from 0
@@ -195,7 +224,10 @@ func startSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlock
 			}
 			fmt.Println("New block header:", header.Number.String())
 
-			capture(client, headerBlockNumber, captureAddresses)
+			if err := capture(client, headerBlockNumber, captureAddresses); err != nil {
+				fmt.Printf("Capture block %d err:%s\n", headerBlockNumber, err.Error())
+				continue
+			}
 
 			// compare header's number with currentBlockNumber
 			// 不可预见原因导致丢失,数据补偿逻辑
@@ -213,7 +245,7 @@ func startSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlock
 				currentBlockNumber = headerBlockNumber
 			}
 		case <-ctx.Done():
-			return nil
+			return currentBlockNumber, nil
 		}
 	}
 }

@@ -15,7 +15,7 @@ import (
 )
 
 func TestClient(t *testing.T) {
-	client, err := newEthClient(os.Getenv(arg.FlagEthereumNetworkAddress))
+	client, err := newEthClient(context.Background(), os.Getenv(arg.FlagEthereumNetworkAddress))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,12 +37,12 @@ func TestClient(t *testing.T) {
 }
 
 func TestHistoryCapture(t *testing.T) {
-	client, err := newEthClient(os.Getenv(arg.FlagEthereumNetworkAddress))
+	client, err := newEthClient(context.Background(), os.Getenv(arg.FlagEthereumNetworkAddress))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	currentBlockNumber, err := historyCapture(client)
+	currentBlockNumber, err := historyCapture(context.Background(), client)
 	if err != nil {
 		t.Fatal(err)
 		os.Exit(0)
@@ -68,7 +68,7 @@ func TestStartSubscribeHead(t *testing.T) {
 	}
 	defer client.Close()
 	go func() {
-		if err := startSubscribeHead(context.Background(), client, 0); err != nil {
+		if _, err := startSubscribeHead(context.Background(), client, 0); err != nil {
 			t.Log(err)
 			t.Fail()
 		}

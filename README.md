@@ -2,4 +2,5 @@
 - No update logic on unfinalized block
 
 ### Todo
-- shutdown context
+- Restful with Gin
+- Capture history with multi goroutine
