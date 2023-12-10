@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/url"
 	"os"
 	"sync/atomic"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/tinkler/subscribe_uniswap/internal/arg"
 	"github.com/tinkler/subscribe_uniswap/internal/collector"
@@ -30,9 +33,35 @@ func init() {
 	fromTime, _ = time.Parse(time.RFC3339[:10], "2023-12-10")
 }
 
+func newEthClient(rawurl string) (*ethclient.Client, error) {
+
+	hc := http.Client{}
+	if proxyURL := os.Getenv(arg.FlagProxy); len(proxyURL) > 0 {
+		// Parse the proxy URL
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, err
+		}
+
+		// Create a new transport and set the proxy
+		transport := &http.Transport{
+			Proxy: http.ProxyURL(proxy),
+		}
+		hc.Transport = transport
+	}
+
+	c, err := rpc.DialOptions(context.Background(), rawurl, rpc.WithHTTPClient(&hc))
+	if err != nil {
+		return nil, err
+	}
+
+	return ethclient.NewClient(c), nil
+
+}
+
 func main() {
 	// Dial new client
-	client, err := ethclient.Dial(os.Getenv(arg.FlagEthereumNetworkAddress))
+	client, err := newEthClient(os.Getenv(arg.FlagEthereumNetworkAddress))
 	if err != nil {
 		fmt.Println("Failed to connect to the Ethereum network:", err)
 		return
@@ -46,7 +75,12 @@ func main() {
 		fmt.Println("Program running error:", err.Error())
 		os.Exit(0)
 	}
-	go startSubscribeHead(client, currentBlockNumber)
+	fmt.Println(currentBlockNumber)
+	go func() {
+		if err := startSubscribeHead(client, 0); err != nil {
+			os.Exit(0)
+		}
+	}()
 
 	<-waitc
 }
@@ -116,6 +150,10 @@ func historyCapture(client *ethclient.Client) (currentBlockNumber uint64, err er
 			for _, l := range logs {
 				collector.DefaultCollector.Store(l.TxHash.String(), l)
 			}
+
+			fmt.Printf("Success to get block %d\n", preBlockNumber)
+
+			preBlockNumber--
 		}
 	}()
 
@@ -125,6 +163,7 @@ func historyCapture(client *ethclient.Client) (currentBlockNumber uint64, err er
 func startSubscribeHead(client *ethclient.Client, fromBlockNumber uint64) error {
 
 	currentBlockNumber := fromBlockNumber
+
 	// subscribe new head
 	headers := make(chan *types.Header)
 	sub, err := client.SubscribeNewHead(context.Background(), headers)
@@ -142,6 +181,10 @@ func startSubscribeHead(client *ethclient.Client, fromBlockNumber uint64) error 
 			return err
 		case header := <-headers:
 			headerBlockNumber := header.Number.Uint64()
+			// no from 0
+			if fromBlockNumber == 0 {
+				currentBlockNumber = headerBlockNumber
+			}
 			fmt.Println("New block header:", header.Number.String())
 
 			logs, err := client.FilterLogs(context.Background(), ethereum.FilterQuery{
