@@ -1,20 +1,28 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"math/big"
 	"os"
+	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/tinkler/subscribe_uniswap/internal/arg"
+	"github.com/tinkler/subscribe_uniswap/internal/collector"
 )
+
+var fromTime time.Time
+var topics = [][]common.Hash{{}}
+
+func init() {
+	fromTime, _ = time.Parse(time.RFC3339[:10], "2023-12-10")
+}
 
 func main() {
 	// Dial new client
@@ -26,20 +34,14 @@ func main() {
 	defer client.Close()
 
 	waitc := make(chan struct{})
-	// v2
-	go startSubscribe(client, common.HexToAddress(``), []byte(``))
-	// v3
-	go startSubscribe(client, common.HexToAddress(``), []byte(``))
+	uniswapV2Address := common.HexToAddress(`0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D`)
+	uniswapV3Address := common.HexToAddress(`0xE592427A0AEce92De3Edee1F18E0157C05861564`)
+	go startSubscribe(client, []common.Address{uniswapV2Address, uniswapV3Address})
+
 	<-waitc
 }
 
-func startSubscribe(client *ethclient.Client, uniswapAddress common.Address, uniswapABIJSON []byte) {
-	// Parse the ABI
-	uniswapABI, err := abi.JSON(bytes.NewReader(uniswapABIJSON))
-	if err != nil {
-		fmt.Println("Failed to parse the abi json")
-		return
-	}
+func startSubscribe(client *ethclient.Client, uniswapAddresses []common.Address) {
 
 	var (
 		latestBlockNumber  uint64
@@ -61,11 +63,10 @@ func startSubscribe(client *ethclient.Client, uniswapAddress common.Address, uni
 		return
 	}
 
-	topics := [][]common.Hash{{}, {uniswapABI.Events["Transfer"].ID}}
 	query := ethereum.FilterQuery{
 		FromBlock: latestBlock.Number(),
 		ToBlock:   latestBlock.Number(),
-		Addresses: []common.Address{uniswapAddress},
+		Addresses: uniswapAddresses,
 		Topics:    topics,
 	}
 	logs, err := client.FilterLogs(context.Background(), query)
@@ -75,12 +76,44 @@ func startSubscribe(client *ethclient.Client, uniswapAddress common.Address, uni
 	}
 
 	for _, l := range logs {
-		// TODO: store to mem
-		fmt.Println(l.TxHash.Hex())
+		collector.DefaultCollector.Store(l.TxHash.String(), l)
 	}
 
 	// success to get the latest block's uniswap logs
 	currentBlockNumber = latestBlockNumber
+	// 重新采集之前的
+	go func() {
+		var (
+			preBlockNumber = latestBlockNumber - 1
+		)
+		for {
+			preBlock, err := client.BlockByNumber(context.Background(), big.NewInt(int64(preBlockNumber)))
+			if err != nil {
+				fmt.Printf("Faile to get the block with number:%d, will retry in 1s\n", preBlockNumber)
+				time.Sleep(time.Second)
+				continue
+			}
+			if time.Unix(int64(preBlock.Time()), 0).Before(fromTime) {
+				break
+			}
+
+			query := ethereum.FilterQuery{
+				FromBlock: preBlock.Number(),
+				ToBlock:   preBlock.Number(),
+				Addresses: uniswapAddresses,
+				Topics:    topics,
+			}
+			logs, err := client.FilterLogs(context.Background(), query)
+			if err != nil {
+				fmt.Println("Failed to filter logs:", err)
+				return
+			}
+
+			for _, l := range logs {
+				collector.DefaultCollector.Store(l.TxHash.String(), l)
+			}
+		}
+	}()
 
 	// subscribe new head
 	headers := make(chan *types.Header)
@@ -90,7 +123,7 @@ func startSubscribe(client *ethclient.Client, uniswapAddress common.Address, uni
 		return
 	}
 
-	//
+	recapturing := uint32(0)
 
 	for {
 		select {
@@ -101,7 +134,7 @@ func startSubscribe(client *ethclient.Client, uniswapAddress common.Address, uni
 			fmt.Println("New block header:", header.Number.String())
 
 			logs, err := client.FilterLogs(context.Background(), ethereum.FilterQuery{
-				Addresses: []common.Address{uniswapAddress},
+				Addresses: uniswapAddresses,
 				Topics:    topics,
 				FromBlock: header.Number,
 				ToBlock:   header.Number,
@@ -112,29 +145,35 @@ func startSubscribe(client *ethclient.Client, uniswapAddress common.Address, uni
 			}
 
 			for _, log := range logs {
-				// TODO: store to mem
-				fmt.Println("Transfer event:", log)
+				collector.DefaultCollector.Store(log.TxHash.String(), log)
 			}
 
-			// compare header's number with currentBlockNumber and impute missing logs
+			// compare header's number with currentBlockNumber
+			// 不可预见原因导致丢失,数据补偿逻辑
 			if currentBlockNumber+1 < headerBlockNumber {
-				logs, err = client.FilterLogs(context.Background(), ethereum.FilterQuery{
-					Addresses: []common.Address{uniswapAddress},
-					Topics:    topics,
-					FromBlock: big.NewInt(int64(currentBlockNumber) + 1),
-					ToBlock:   big.NewInt(int64(headerBlockNumber) - 1),
-				})
+				go func(targetBlockNumber uint64) {
+					if atomic.CompareAndSwapUint32(&recapturing, 0, 1) {
+						defer func() {
+							atomic.StoreUint32(&recapturing, 0)
+						}()
+						logs, err = client.FilterLogs(context.Background(), ethereum.FilterQuery{
+							Addresses: uniswapAddresses,
+							Topics:    topics,
+							FromBlock: big.NewInt(int64(currentBlockNumber) + 1),
+							ToBlock:   big.NewInt(int64(targetBlockNumber) - 1),
+						})
 
-				if err != nil {
-					log.Fatal(err)
-				}
+						if err != nil {
+							log.Fatal(err)
+						}
 
-				for _, log := range logs {
-					// TODO: store to mem
-					fmt.Println("Transfer event:", log)
-				}
+						for _, log := range logs {
+							collector.DefaultCollector.Store(log.TxHash.String(), log)
+						}
+						currentBlockNumber = targetBlockNumber
+					}
+				}(headerBlockNumber)
 			}
-
 		}
 	}
 }
