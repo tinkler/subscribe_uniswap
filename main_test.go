@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"log"
+	"math/big"
 	"os"
 	"testing"
 	"time"
@@ -10,6 +13,28 @@ import (
 	"github.com/tinkler/subscribe_uniswap/internal/arg"
 	"github.com/tinkler/subscribe_uniswap/internal/collector"
 )
+
+func TestClient(t *testing.T) {
+	client, err := newEthClient(os.Getenv(arg.FlagEthereumNetworkAddress))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	block, err := client.BlockByNumber(context.Background(), big.NewInt(18754505))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, txn := range block.Transactions() {
+		if txn.Hash().String() == "0x1d30ad54836553ad89393fe69a458a309551409edb2de2a90ce7021a382e6c64" {
+			found = true
+			log.Println(txn.To().String() == captureAddresses[0].String())
+		}
+	}
+	if !found {
+		t.Fail()
+	}
+}
 
 func TestHistoryCapture(t *testing.T) {
 	client, err := newEthClient(os.Getenv(arg.FlagEthereumNetworkAddress))
@@ -43,7 +68,7 @@ func TestStartSubscribeHead(t *testing.T) {
 	}
 	defer client.Close()
 	go func() {
-		if err := startSubscribeHead(client, 0); err != nil {
+		if err := startSubscribeHead(context.Background(), client, 0); err != nil {
 			t.Log(err)
 			t.Fail()
 		}
