@@ -27,7 +27,10 @@ var (
 
 var fromTime time.Time
 var topics = [][]common.Hash{}
-var captureAddresses = []common.Address{uniswapV2Address, uniswapV3Address}
+var captureAddresses = []common.Address{
+	uniswapV2Address,
+	uniswapV3Address,
+}
 
 func init() {
 	fromTime, _ = time.Parse(time.RFC3339[:10], "2023-12-10")
@@ -67,6 +70,12 @@ func main() {
 		return
 	}
 	defer client.Close()
+	wssClient, err := ethclient.Dial(os.Getenv(arg.FlagEthereumNetworkAddressWss))
+	if err != nil {
+		fmt.Println("Failed to connect to the Ethereum wss network:", err)
+		return
+	}
+	defer client.Close()
 
 	waitc := make(chan struct{})
 
@@ -78,7 +87,7 @@ func main() {
 	}
 	fmt.Println(currentBlockNumber)
 	go func() {
-		if err := startSubscribeHead(client, currentBlockNumber); err != nil {
+		if err := startSubscribeHead(wssClient, currentBlockNumber); err != nil {
 			os.Exit(0)
 		}
 	}()
@@ -140,7 +149,7 @@ func historyCapture(client *ethclient.Client) (currentBlockNumber uint64, err er
 				FromBlock: preBlock.Number(),
 				ToBlock:   preBlock.Number(),
 				Addresses: captureAddresses,
-				Topics:    topics,
+				// Topics:    topics,
 			}
 			logs, err := client.FilterLogs(context.Background(), query)
 			if err != nil {
