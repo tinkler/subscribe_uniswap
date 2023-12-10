@@ -15,7 +15,7 @@ func Get(ctx *gin.Context) {
 		return
 	}
 
-	txnIn, exist := collector.DefaultCollector.Load(txnAddr)
+	txnIn, exist := collector.DefaultTransactionCollector.Load(txnAddr)
 	if exist {
 		ctx.JSON(http.StatusOK, gin.H{"data": txnIn.(*types.Transaction)})
 		return

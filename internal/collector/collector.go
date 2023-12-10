@@ -1,5 +1,58 @@
 package collector
 
-import "sync"
+import (
+	"sync"
 
-var DefaultCollector = sync.Map{}
+	"github.com/ethereum/go-ethereum/core/types"
+)
+
+var DefaultTransactionCollector = sync.Map{}
+var DefaultBlockCollector = NewBlockCollector()
+
+type BlockCollector struct {
+	blocks sync.Map
+}
+
+func NewBlockCollector() *BlockCollector {
+	return &BlockCollector{}
+}
+
+func (bc *BlockCollector) Store(block *types.Block) {
+	blockNumber := block.NumberU64()
+	bc.blocks.Store(blockNumber, block)
+}
+
+func (bc *BlockCollector) Load(blockNumber uint64) (*types.Block, bool) {
+	v, ok := bc.blocks.Load(blockNumber)
+	if !ok {
+		return nil, false
+	}
+	return v.(*types.Block), true
+}
+
+func (bc *BlockCollector) FindMissingBlocks() []uint64 {
+	numSet := make(map[uint64]bool)
+
+	var (
+		min, max uint64
+	)
+	bc.blocks.Range(func(key, value any) bool {
+		num := key.(uint64)
+		if min > num {
+			min = num
+		}
+		if max < num {
+			max = num
+		}
+		numSet[num] = true
+		return true
+	})
+
+	missingNum := []uint64{}
+	for i := min + 1; i < max; i++ {
+		if !numSet[i] {
+			missingNum = append(missingNum, i)
+		}
+	}
+	return missingNum
+}

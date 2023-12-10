@@ -40,32 +40,6 @@ func init() {
 	fromTime, _ = time.Parse(time.RFC3339[:10], "2023-12-10")
 }
 
-func newEthClient(ctx context.Context, rawurl string) (*ethclient.Client, error) {
-
-	hc := http.Client{}
-	if proxyURL := os.Getenv(arg.FlagProxy); len(proxyURL) > 0 {
-		// Parse the proxy URL
-		proxy, err := url.Parse(proxyURL)
-		if err != nil {
-			return nil, err
-		}
-
-		// Create a new transport and set the proxy
-		transport := &http.Transport{
-			Proxy: http.ProxyURL(proxy),
-		}
-		hc.Transport = transport
-	}
-
-	c, err := rpc.DialOptions(ctx, rawurl, rpc.WithHTTPClient(&hc))
-	if err != nil {
-		return nil, err
-	}
-
-	return ethclient.NewClient(c), nil
-
-}
-
 func main() {
 	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 
@@ -76,6 +50,7 @@ func main() {
 		return
 	}
 	defer client.Close()
+	// Dial wss client
 	wssClient, err := ethclient.DialContext(ctx, os.Getenv(arg.FlagEthereumNetworkAddressWss))
 	if err != nil {
 		fmt.Println("Failed to connect to the Ethereum wss network:", err)
@@ -95,6 +70,7 @@ func main() {
 			os.Exit(0)
 		}
 	}()
+	go repareBlockChain(ctx, client)
 
 	var srv *http.Server
 	if httpAddress := os.Getenv(arg.FlagListen); httpAddress != "" {
@@ -122,6 +98,32 @@ func main() {
 	fmt.Println("Shutdown success")
 }
 
+func newEthClient(ctx context.Context, rawurl string) (*ethclient.Client, error) {
+
+	hc := http.Client{}
+	if proxyURL := os.Getenv(arg.FlagProxy); len(proxyURL) > 0 {
+		// Parse the proxy URL
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, err
+		}
+
+		// Create a new transport and set the proxy
+		transport := &http.Transport{
+			Proxy: http.ProxyURL(proxy),
+		}
+		hc.Transport = transport
+	}
+
+	c, err := rpc.DialOptions(ctx, rawurl, rpc.WithHTTPClient(&hc))
+	if err != nil {
+		return nil, err
+	}
+
+	return ethclient.NewClient(c), nil
+
+}
+
 func includes(captureAddresses []common.Address, target *common.Address) bool {
 	if target == nil {
 		return false
@@ -140,13 +142,14 @@ func capture(client *ethclient.Client, blockNumber uint64, captureAddresses []co
 		return err
 	}
 	captureBlock(block, captureAddresses)
+	collector.DefaultBlockCollector.Store(block)
 	return nil
 }
 
 func captureBlock(block *types.Block, captureAddresses []common.Address) {
 	for _, txn := range block.Transactions() {
 		if includes(captureAddresses, txn.To()) {
-			collector.DefaultCollector.Store(txn.Hash().String(), txn)
+			collector.DefaultTransactionCollector.Store(txn.Hash().String(), txn)
 		}
 	}
 }
@@ -213,7 +216,7 @@ func holdSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlockN
 				fmt.Printf("Retry %d subscribe header\n", retryCount)
 				continue
 			}
-			return errors.New("Failed to subscribe new head more than 3 times")
+			return errors.New("failed to subscribe new head more than 3 times")
 		}
 	}
 }
@@ -270,6 +273,23 @@ func startSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlock
 			}
 		case <-ctx.Done():
 			return currentBlockNumber, nil
+		}
+	}
+}
+
+func repareBlockChain(ctx context.Context, client *ethclient.Client) {
+	repareTicker := time.NewTicker(time.Second)
+	for {
+		select {
+		case <-repareTicker.C:
+			missingBlockNumbers := collector.DefaultBlockCollector.FindMissingBlocks()
+			for _, missingBlock := range missingBlockNumbers {
+				if err := capture(client, missingBlock, captureAddresses); err != nil {
+					fmt.Println("Failed to repare block chain," + err.Error())
+				}
+			}
+		case <-ctx.Done():
+			return
 		}
 	}
 }

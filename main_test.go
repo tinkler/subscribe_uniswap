@@ -52,7 +52,7 @@ func TestHistoryCapture(t *testing.T) {
 	}
 	time.Sleep(time.Second * 20)
 	has := false
-	collector.DefaultCollector.Range(func(key, value any) bool {
+	collector.DefaultTransactionCollector.Range(func(key, value any) bool {
 		has = true
 		return true
 	})
@@ -85,7 +85,7 @@ func TestStartSubscribeHead(t *testing.T) {
 	go func() {
 		for range time.NewTicker(time.Second).C {
 
-			collector.DefaultCollector.Range(func(key, value any) bool {
+			collector.DefaultTransactionCollector.Range(func(key, value any) bool {
 				has = true
 				return true
 			})
