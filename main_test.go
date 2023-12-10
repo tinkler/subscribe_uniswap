@@ -25,7 +25,15 @@ func TestHistoryCapture(t *testing.T) {
 	if currentBlockNumber == 0 {
 		t.Fail()
 	}
-	time.Sleep(time.Second * 3)
+	time.Sleep(time.Second * 20)
+	has := false
+	collector.DefaultCollector.Range(func(key, value any) bool {
+		has = true
+		return true
+	})
+	if !has {
+		t.Fail()
+	}
 }
 
 func TestStartSubscribeHead(t *testing.T) {
@@ -41,20 +49,28 @@ func TestStartSubscribeHead(t *testing.T) {
 		}
 	}()
 
+	waitc := make(chan struct{})
 	go func() {
-		<-time.NewTimer(time.Second * 15).C
-		t.Fail()
+		<-time.NewTimer(time.Second * 20).C
+		close(waitc)
 	}()
 
-	for range time.NewTicker(time.Second).C {
-		has := false
-		collector.DefaultCollector.Range(func(key, value any) bool {
-			has = true
-			return true
-		})
-		if has {
-			return
+	has := false
+
+	go func() {
+		for range time.NewTicker(time.Second).C {
+
+			collector.DefaultCollector.Range(func(key, value any) bool {
+				has = true
+				return true
+			})
+
 		}
+
+	}()
+	<-waitc
+	if !has {
+		t.Fail()
 	}
 
 }

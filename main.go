@@ -26,7 +26,7 @@ var (
 )
 
 var fromTime time.Time
-var topics = [][]common.Hash{{}}
+var topics = [][]common.Hash{}
 var captureAddresses = []common.Address{uniswapV2Address, uniswapV3Address}
 
 func init() {
@@ -70,6 +70,7 @@ func main() {
 
 	waitc := make(chan struct{})
 
+	// TODO: check if is finalized
 	currentBlockNumber, err := historyCapture(client)
 	if err != nil {
 		fmt.Println("Program running error:", err.Error())
@@ -81,7 +82,6 @@ func main() {
 			os.Exit(0)
 		}
 	}()
-	// TODO: subscribe unfinalized block
 
 	<-waitc
 }
@@ -173,6 +173,7 @@ func startSubscribeHead(client *ethclient.Client, fromBlockNumber uint64) error 
 		return err
 	}
 
+	initilized := false
 	recapturing := uint32(0)
 
 	for {
@@ -183,16 +184,17 @@ func startSubscribeHead(client *ethclient.Client, fromBlockNumber uint64) error 
 		case header := <-headers:
 			headerBlockNumber := header.Number.Uint64()
 			// no from 0
-			if fromBlockNumber == 0 {
+			if fromBlockNumber == 0 && !initilized {
+				initilized = true
 				currentBlockNumber = headerBlockNumber
 			}
 			fmt.Println("New block header:", header.Number.String())
 
 			logs, err := client.FilterLogs(context.Background(), ethereum.FilterQuery{
 				Addresses: captureAddresses,
-				Topics:    topics,
 				FromBlock: header.Number,
 				ToBlock:   header.Number,
+				Topics:    topics,
 			})
 
 			if err != nil {
@@ -227,11 +229,14 @@ func startSubscribeHead(client *ethclient.Client, fromBlockNumber uint64) error 
 						}
 
 						for _, log := range logs {
+
 							collector.DefaultCollector.Store(log.TxHash.String(), log)
 						}
 						currentBlockNumber = targetBlockNumber
 					}
 				}(headerBlockNumber)
+			} else {
+				currentBlockNumber = headerBlockNumber
 			}
 		}
 	}
