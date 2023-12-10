@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/tinkler/subscribe_uniswap/internal/arg"
 	"github.com/tinkler/subscribe_uniswap/internal/collector"
+	"github.com/tinkler/subscribe_uniswap/internal/server"
 )
 
 var (
@@ -94,7 +96,29 @@ func main() {
 		}
 	}()
 
+	var srv *http.Server
+	if httpAddress := os.Getenv(arg.FlagListen); httpAddress != "" {
+		srv = server.NewHttpServer(httpAddress)
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Println("Failed to listen http server," + err.Error())
+			}
+		}()
+		fmt.Println("Listen http server on " + httpAddress)
+	}
+
 	<-ctx.Done()
+
+	// shutdown context
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if srv != nil {
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Println("Server forced to shutdown")
+		}
+	}
+
 	fmt.Println("Shutdown success")
 }
 

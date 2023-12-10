@@ -5,4 +5,6 @@ const (
 	FlagEthereumNetworkAddressWss = "ETHEREUM_NETWORK_WSS"
 
 	FlagProxy = "HTTP_PROXY"
+
+	FlagListen = "LISTEN_ADDRESS"
 )
