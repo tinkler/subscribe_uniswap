@@ -77,10 +77,11 @@ func main() {
 	}
 	fmt.Println(currentBlockNumber)
 	go func() {
-		if err := startSubscribeHead(client, 0); err != nil {
+		if err := startSubscribeHead(client, currentBlockNumber); err != nil {
 			os.Exit(0)
 		}
 	}()
+	// TODO: subscribe unfinalized block
 
 	<-waitc
 }
