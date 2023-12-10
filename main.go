@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/big"
 	"os"
 	"sync/atomic"
@@ -13,12 +12,19 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	_ "github.com/joho/godotenv/autoload"
 	"github.com/tinkler/subscribe_uniswap/internal/arg"
 	"github.com/tinkler/subscribe_uniswap/internal/collector"
 )
 
+var (
+	uniswapV2Address = common.HexToAddress(`0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D`)
+	uniswapV3Address = common.HexToAddress(`0xE592427A0AEce92De3Edee1F18E0157C05861564`)
+)
+
 var fromTime time.Time
 var topics = [][]common.Hash{{}}
+var captureAddresses = []common.Address{uniswapV2Address, uniswapV3Address}
 
 func init() {
 	fromTime, _ = time.Parse(time.RFC3339[:10], "2023-12-10")
@@ -34,45 +40,43 @@ func main() {
 	defer client.Close()
 
 	waitc := make(chan struct{})
-	uniswapV2Address := common.HexToAddress(`0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D`)
-	uniswapV3Address := common.HexToAddress(`0xE592427A0AEce92De3Edee1F18E0157C05861564`)
-	go startSubscribe(client, []common.Address{uniswapV2Address, uniswapV3Address})
+
+	currentBlockNumber, err := historyCapture(client)
+	if err != nil {
+		fmt.Println("Program running error:", err.Error())
+		os.Exit(0)
+	}
+	go startSubscribeHead(client, currentBlockNumber)
 
 	<-waitc
 }
 
-func startSubscribe(client *ethclient.Client, uniswapAddresses []common.Address) {
-
-	var (
-		latestBlockNumber  uint64
-		currentBlockNumber uint64
-	)
-
+// 返回历史数据抓取的区块高度
+func historyCapture(client *ethclient.Client) (currentBlockNumber uint64, err error) {
 	// Get the latest header
 	header, err := client.HeaderByNumber(context.Background(), nil)
 	if err != nil {
 		fmt.Println("Failed to get the latest header:", err)
-		return
+		return 0, err
 	}
-	latestBlockNumber = header.Number.Uint64()
+	latestBlockNumber := header.Number.Uint64()
 	fmt.Println("Latest Block Number:", latestBlockNumber)
 	// Get the latest block data's uniswap log
 	latestBlock, err := client.BlockByNumber(context.Background(), big.NewInt(int64(latestBlockNumber)))
 	if err != nil {
 		fmt.Println("Failed to get the latest block data")
-		return
+		return 0, err
 	}
-
 	query := ethereum.FilterQuery{
 		FromBlock: latestBlock.Number(),
 		ToBlock:   latestBlock.Number(),
-		Addresses: uniswapAddresses,
+		Addresses: captureAddresses,
 		Topics:    topics,
 	}
 	logs, err := client.FilterLogs(context.Background(), query)
 	if err != nil {
 		fmt.Println("Failed to filter logs:", err)
-		return
+		return 0, err
 	}
 
 	for _, l := range logs {
@@ -100,7 +104,7 @@ func startSubscribe(client *ethclient.Client, uniswapAddresses []common.Address)
 			query := ethereum.FilterQuery{
 				FromBlock: preBlock.Number(),
 				ToBlock:   preBlock.Number(),
-				Addresses: uniswapAddresses,
+				Addresses: captureAddresses,
 				Topics:    topics,
 			}
 			logs, err := client.FilterLogs(context.Background(), query)
@@ -115,12 +119,18 @@ func startSubscribe(client *ethclient.Client, uniswapAddresses []common.Address)
 		}
 	}()
 
+	return currentBlockNumber, nil
+}
+
+func startSubscribeHead(client *ethclient.Client, fromBlockNumber uint64) error {
+
+	currentBlockNumber := fromBlockNumber
 	// subscribe new head
 	headers := make(chan *types.Header)
 	sub, err := client.SubscribeNewHead(context.Background(), headers)
 	if err != nil {
-		fmt.Println("Failed to subscribe new header")
-		return
+		fmt.Printf("Failed to subscribe new header, %s\n", err.Error())
+		return err
 	}
 
 	recapturing := uint32(0)
@@ -128,20 +138,22 @@ func startSubscribe(client *ethclient.Client, uniswapAddresses []common.Address)
 	for {
 		select {
 		case err := <-sub.Err():
-			log.Fatal(err)
+			fmt.Printf("Subscribe NewHead err: %s\n", err)
+			return err
 		case header := <-headers:
 			headerBlockNumber := header.Number.Uint64()
 			fmt.Println("New block header:", header.Number.String())
 
 			logs, err := client.FilterLogs(context.Background(), ethereum.FilterQuery{
-				Addresses: uniswapAddresses,
+				Addresses: captureAddresses,
 				Topics:    topics,
 				FromBlock: header.Number,
 				ToBlock:   header.Number,
 			})
 
 			if err != nil {
-				log.Fatal(err)
+				fmt.Printf("Failed to subscribe block %d data: %s", header.Number.Int64(), err.Error())
+				continue
 			}
 
 			for _, log := range logs {
@@ -156,15 +168,18 @@ func startSubscribe(client *ethclient.Client, uniswapAddresses []common.Address)
 						defer func() {
 							atomic.StoreUint32(&recapturing, 0)
 						}()
+						fromBlockNumber := big.NewInt(int64(currentBlockNumber) + 1)
+						toBlockNumber := big.NewInt(int64(targetBlockNumber) - 1) // targetBlock has been captured
 						logs, err = client.FilterLogs(context.Background(), ethereum.FilterQuery{
-							Addresses: uniswapAddresses,
+							Addresses: captureAddresses,
 							Topics:    topics,
-							FromBlock: big.NewInt(int64(currentBlockNumber) + 1),
-							ToBlock:   big.NewInt(int64(targetBlockNumber) - 1),
+							FromBlock: fromBlockNumber,
+							ToBlock:   toBlockNumber,
 						})
 
 						if err != nil {
-							log.Fatal(err)
+							fmt.Printf("Recapture from %d to %d error:%s\n", fromBlockNumber.Int64(), toBlockNumber.Int64(), err)
+							return
 						}
 
 						for _, log := range logs {
