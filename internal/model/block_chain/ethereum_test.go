@@ -1,4 +1,4 @@
-package main
+package block_chain
 
 import (
 	"context"
@@ -9,13 +9,19 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/joho/godotenv"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/tinkler/subscribe_uniswap/internal/arg"
 	"github.com/tinkler/subscribe_uniswap/internal/collector"
 )
 
+func initEnv() {
+	godotenv.Load("../../../.env")
+}
+
 func TestClient(t *testing.T) {
-	client, err := newEthClient(context.Background(), os.Getenv(arg.FlagEthereumNetworkAddress))
+	initEnv()
+	client, err := NewEthClient(context.Background(), os.Getenv(arg.FlagEthereumNetworkAddress), os.Getenv(arg.FlagProxy))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,12 +43,13 @@ func TestClient(t *testing.T) {
 }
 
 func TestHistoryCapture(t *testing.T) {
-	client, err := newEthClient(context.Background(), os.Getenv(arg.FlagEthereumNetworkAddress))
+	initEnv()
+	client, err := NewEthClient(context.Background(), os.Getenv(arg.FlagEthereumNetworkAddress), os.Getenv(arg.FlagProxy))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	currentBlockNumber, err := historyCapture(context.Background(), client)
+	currentBlockNumber, err := HistoryCapture(context.Background(), client)
 	if err != nil {
 		t.Fatal(err)
 		os.Exit(0)
@@ -62,6 +69,7 @@ func TestHistoryCapture(t *testing.T) {
 }
 
 func TestStartSubscribeHead(t *testing.T) {
+	initEnv()
 	client, err := ethclient.Dial(os.Getenv(arg.FlagEthereumNetworkAddressWss))
 	if err != nil {
 		t.Fatal(err)

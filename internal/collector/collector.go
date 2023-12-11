@@ -6,11 +6,11 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-var DefaultTransactionCollector = sync.Map{}
 var DefaultBlockCollector = NewBlockCollector()
 
 type BlockCollector struct {
-	blocks sync.Map
+	blocks            sync.Map
+	latestBlockNumber uint64
 }
 
 func NewBlockCollector() *BlockCollector {
@@ -20,6 +20,9 @@ func NewBlockCollector() *BlockCollector {
 func (bc *BlockCollector) Store(block *types.Block) {
 	blockNumber := block.NumberU64()
 	bc.blocks.Store(blockNumber, block)
+	if bc.latestBlockNumber < blockNumber {
+		bc.latestBlockNumber = blockNumber
+	}
 }
 
 func (bc *BlockCollector) Load(blockNumber uint64) (*types.Block, bool) {
@@ -28,6 +31,18 @@ func (bc *BlockCollector) Load(blockNumber uint64) (*types.Block, bool) {
 		return nil, false
 	}
 	return v.(*types.Block), true
+}
+
+func (bc *BlockCollector) GetLatestBlock() *types.Block {
+	di, ok := bc.blocks.Load(bc.latestBlockNumber)
+	if !ok {
+		return nil
+	}
+	return di.(*types.Block)
+}
+
+func (bc *BlockCollector) LatestBlockNumber() uint64 {
+	return bc.latestBlockNumber
 }
 
 func (bc *BlockCollector) FindMissingBlocks() []uint64 {

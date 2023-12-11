@@ -22,5 +22,4 @@ func Get(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"status": 1, "message": "Transaction is not found"})
-	return
 }
