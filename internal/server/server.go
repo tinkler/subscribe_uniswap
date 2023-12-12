@@ -17,6 +17,7 @@ func NewHttpServer(addr string) *http.Server {
 
 	transactionGroup := router.Group("/transaction")
 	routes.TransactionRoute(transactionGroup)
-
+	transactionListGroup := router.Group("/transactions")
+	routes.TransactionListRoute(transactionListGroup)
 	return srv
 }

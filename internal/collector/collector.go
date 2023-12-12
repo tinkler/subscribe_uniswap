@@ -38,7 +38,7 @@ func (bc *BlockCollector) Load(blockNumber uint64) (*types.Block, bool) {
 	return v.(*types.Block), true
 }
 
-func (bc *BlockCollector) GetLatestBlock() *types.Block {
+func (bc *BlockCollector) LatestBlock() *types.Block {
 	di, ok := bc.blocks.Load(bc.latestBlockNumber)
 	if !ok {
 		return nil
