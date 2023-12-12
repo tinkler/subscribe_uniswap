@@ -95,6 +95,7 @@ func TestStartSubscribeHead(t *testing.T) {
 
 			collector.DefaultTransactionCollector.Range(func(key, value any) bool {
 				has = true
+				close(waitc)
 				return true
 			})
 
@@ -106,4 +107,44 @@ func TestStartSubscribeHead(t *testing.T) {
 		t.Fail()
 	}
 
+}
+
+func TestStartSubscribeNewPendingTransactions(t *testing.T) {
+	initEnv()
+	client, err := ethclient.Dial(os.Getenv(arg.FlagEthereumNetworkAddressWss))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	go func() {
+		if err := startSubscribeNewPendingTransactions(context.Background(), client); err != nil {
+			t.Log(err)
+			t.Fail()
+		}
+	}()
+
+	waitc := make(chan struct{})
+	go func() {
+		<-time.NewTimer(time.Second * 5).C
+		close(waitc)
+	}()
+
+	has := false
+
+	go func() {
+		for range time.NewTicker(time.Second).C {
+
+			if len(collector.DefaultBlockCollector.PendingTransactions()) > 0 {
+				has = true
+				close(waitc)
+				return
+			}
+
+		}
+
+	}()
+	<-waitc
+	if !has {
+		t.Fail()
+	}
 }

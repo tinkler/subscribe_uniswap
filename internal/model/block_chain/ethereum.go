@@ -84,6 +84,7 @@ func capture(client *ethclient.Client, blockNumber uint64, captureAddresses []co
 func captureBlock(block *types.Block, captureAddresses []common.Address) {
 	for _, txn := range block.Transactions() {
 		if includes(captureAddresses, txn.To()) {
+
 			collector.DefaultTransactionCollector.Store(txn.Hash().String(), txn)
 		}
 	}
@@ -208,6 +209,27 @@ func startSubscribeHead(ctx context.Context, client *ethclient.Client, fromBlock
 			}
 		case <-ctx.Done():
 			return currentBlockNumber, nil
+		}
+	}
+}
+
+func startSubscribeNewPendingTransactions(ctx context.Context, client *ethclient.Client) error {
+	pendingTxn := make(chan common.Hash)
+	sub, err := client.Client().EthSubscribe(ctx, pendingTxn, "newPendingTransactions")
+	if err != nil {
+		fmt.Printf("Failed to subscribe new pending transactions, %s\n", err.Error())
+		return err
+	}
+	defer sub.Unsubscribe()
+
+	for {
+		select {
+		case err := <-sub.Err():
+			fmt.Printf("Subscribe new pendding transactions err: %s", err.Error())
+			return err
+		case txn := <-pendingTxn:
+			fmt.Println(txn)
+			collector.DefaultBlockCollector.AddPendingTransaction(txn)
 		}
 	}
 }

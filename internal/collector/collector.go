@@ -3,14 +3,19 @@ package collector
 import (
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
+
+const desiredConfirmations = uint64(1)
 
 var DefaultBlockCollector = NewBlockCollector()
 
 type BlockCollector struct {
-	blocks            sync.Map
-	latestBlockNumber uint64
+	blocks                        sync.Map
+	latestBlockNumber             uint64
+	earliestPendingTransactionTxn string
+	pendingTransactions           []common.Hash
 }
 
 func NewBlockCollector() *BlockCollector {
@@ -43,6 +48,14 @@ func (bc *BlockCollector) GetLatestBlock() *types.Block {
 
 func (bc *BlockCollector) LatestBlockNumber() uint64 {
 	return bc.latestBlockNumber
+}
+
+func (bc *BlockCollector) AddPendingTransaction(txn common.Hash) {
+	bc.pendingTransactions = append(bc.pendingTransactions, txn)
+}
+
+func (bc *BlockCollector) PendingTransactions() []common.Hash {
+	return bc.pendingTransactions
 }
 
 func (bc *BlockCollector) FindMissingBlocks() []uint64 {
